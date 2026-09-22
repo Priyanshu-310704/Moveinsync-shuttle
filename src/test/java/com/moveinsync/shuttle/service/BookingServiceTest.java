@@ -24,6 +24,13 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpStatus;
 import org.springframework.test.context.ActiveProfiles;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 @SpringBootTest
 @ActiveProfiles("test")
@@ -122,6 +129,116 @@ class BookingServiceTest {
                 .filteredOn(bookingRecord -> bookingRecord.getStatus() == BookingStatus.CONFIRMED)
                 .extracting(Booking::getUserId)
                 .contains(2L);
+    }
+
+    @Test
+    void cancellationFreesSeatAndPromotesFirstEligibleWaitlistEntry() {
+        Long oneSeatTrip = createTripWithSeatCount(1);
+
+        BookingResponse booking =
+                service.book(oneSeatTrip, new BookingRequest(1L, 0, 3));
+
+        service.joinWaitlist(
+                oneSeatTrip,
+                new BookingRequest(2L, 1, 3)
+        );
+
+        service.cancel(booking.bookingId());
+
+        assertThat(waitlist.findByTripIdOrderByCreatedAtAsc(oneSeatTrip))
+                .isEmpty();
+
+        assertThat(bookings.findAll())
+                .filteredOn(record -> record.getStatus() == BookingStatus.CONFIRMED)
+                .extracting(Booking::getUserId)
+                .containsExactly(2L);
+    }
+    @Test
+    void cancellationPromotesWaitlistInFifoOrder() {
+        Long oneSeatTrip = createTripWithSeatCount(1);
+
+        BookingResponse booking =
+                service.book(oneSeatTrip, new BookingRequest(1L, 0, 3));
+
+        // User 2 joins first
+        service.joinWaitlist(
+                oneSeatTrip,
+                new BookingRequest(2L, 0, 2)
+        );
+
+        // User 3 joins second
+        service.joinWaitlist(
+                oneSeatTrip,
+                new BookingRequest(3L, 1, 3)
+        );
+
+        service.cancel(booking.bookingId());
+
+        assertThat(waitlist.findByTripIdOrderByCreatedAtAsc(oneSeatTrip))
+                .extracting(entry -> entry.getUserId())
+                .containsExactly(3L);
+
+        assertThat(bookings.findAll())
+                .filteredOn(record -> record.getStatus() == BookingStatus.CONFIRMED)
+                .extracting(Booking::getUserId)
+                .containsExactly(2L);
+    }
+
+    @Test
+    void concurrentBookingsForLastSeatAllowOnlyOneUserToSucceed()
+            throws Exception {
+
+        Long oneSeatTrip = createTripWithSeatCount(1);
+
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+
+        Callable<Object> bookingAttempt1 = () -> {
+            try {
+                return service.book(
+                        oneSeatTrip,
+                        new BookingRequest(1L, 0, 3)
+                );
+            } catch (ApiException e) {
+                return e;
+            }
+        };
+
+        Callable<Object> bookingAttempt2 = () -> {
+            try {
+                return service.book(
+                        oneSeatTrip,
+                        new BookingRequest(2L, 0, 3)
+                );
+            } catch (ApiException e) {
+                return e;
+            }
+        };
+
+        List<Future<Object>> results = executor.invokeAll(
+                List.of(bookingAttempt1, bookingAttempt2)
+        );
+
+        executor.shutdown();
+
+        List<Object> outcomes = new ArrayList<>();
+        for (Future<Object> result : results) {
+            outcomes.add(result.get());
+        }
+
+        long successfulBookings = outcomes.stream()
+                .filter(BookingResponse.class::isInstance)
+                .count();
+
+        long conflicts = outcomes.stream()
+                .filter(ApiException.class::isInstance)
+                .count();
+
+        assertThat(successfulBookings).isEqualTo(1);
+        assertThat(conflicts).isEqualTo(1);
+
+        assertThat(bookings.findAll())
+                .filteredOn(record -> record.getStatus() == BookingStatus.CONFIRMED)
+                .hasSize(1);
     }
 
     private Long createTripWithSeatCount(int seatCount) {
