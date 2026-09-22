@@ -97,6 +97,22 @@ A segment tree can make repeated interval queries very fast in memory, but requi
 - Constructor injection supports dependency inversion and unit testing.
 - A future `SeatAllocationStrategy` interface could support FirstAvailable, BestFit, etc. without changing the booking service.
 
+## Authentication and User Identity
+
+The case-study API currently accepts `userId` explicitly in booking and
+waitlist requests.
+
+Authentication is handled using HTTP Basic authentication, while the
+request body identifies the user involved in the booking operation.
+
+For a production implementation, the user identity should be derived
+from the authenticated Spring Security principal rather than trusting
+`userId` supplied by the client. This would prevent an authenticated
+user from submitting another user's ID.
+
+This approach was kept in the case study to keep the booking API and
+domain flow simple and focused on the core shuttle-booking requirements.
+
 ## 14. APIs for the final demo
 POST `/api/auth/register`
 Use HTTP Basic authentication with the registered email/password.
